@@ -1,0 +1,3 @@
+docker exec -it ubuntu-ceph bash
+
+aws s3 ls s3://test --endpoint-url http://127.0.0.1:8080
