@@ -1,23 +1,105 @@
 version: '3.8'
 
 services:
-  ubuntu-ceph:
-    build: .
-    container_name: ubuntu-ceph
-    privileged: true
-    env_file:
-      - .env
+  ceph-demo:
+    image: registry.redhat.io/rhceph/rhceph-4-rhel8
+    container_name: ceph-demo
+    command: demo
+    environment:
+      - MON_IP=${MON_IP}
+      - CEPH_PUBLIC_NETWORK=${CEPH_PUBLIC_NETWORK}
+      - CEPH_CLUSTER_NETWORK=${CEPH_CLUSTER_NETWORK}
+      - CEPH_DEMO_UID=${CEPH_DEMO_UID}
+      - CEPH_DEMO_ACCESS_KEY=${CEPH_DEMO_ACCESS_KEY}
+      - CEPH_DEMO_SECRET_KEY=${CEPH_DEMO_SECRET_KEY}
+      - CEPH_DAEMON=${CEPH_DAEMON}
+      - RGW_FRONTEND_PORT=${RGW_FRONTEND_PORT}
     ports:
-      - "6789:6789"
-      - "8989:8080"
-      - "5000:5000"
+      - "8080:8080"  # S3 Gateway
+      - "6789:6789"  # Monitor port
+    volumes:
+      - ceph_data:/var/lib/ceph
+      - ceph_logs:/var/log/ceph
+      - ./ceph.conf:/etc/ceph/ceph.conf:ro
     networks:
-         ceph_network:
-          ipv4_address: 192.168.0.3
+      ceph_network:
+        ipv4_address: ${MON_IP}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  flask-app:
+    build: 
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: flask-app
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - CEPH_ENDPOINT=${CEPH_ENDPOINT}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - FLASK_ENV=${FLASK_ENV}
+      - FLASK_DEBUG=${FLASK_DEBUG}
+      - LOG_LEVEL=${LOG_LEVEL}
+    ports:
+      - "5000:5000"
+    depends_on:
+      ceph-demo:
+        condition: service_healthy
+    networks:
+      ceph_network:
+        ipv4_address: 192.168.0.4
+    volumes:
+      - ./app:/app:ro
+      - flask_uploads:/tmp/uploads
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # Optional: Add a monitoring container
+  health-monitor:
+    image: alpine:latest
+    container_name: health-monitor
+    command: >
+      sh -c "
+        apk add --no-cache curl &&
+        while true; do
+          echo '=== Health Check at $$(date) ===' &&
+          echo 'Ceph Status:' &&
+          curl -s http://192.168.0.3:8080 > /dev/null && echo 'Ceph: OK' || echo 'Ceph: FAIL' &&
+          echo 'Flask Status:' &&
+          curl -s http://192.168.0.4:5000/health > /dev/null && echo 'Flask: OK' || echo 'Flask: FAIL' &&
+          echo '================================' &&
+          sleep 60
+        done
+      "
+    depends_on:
+      - ceph-demo
+      - flask-app
+    networks:
+      - ceph_network
+    restart: unless-stopped
+
+volumes:
+  ceph_data:
+    driver: local
+  ceph_logs:
+    driver: local
+  flask_uploads:
+    driver: local
+
 networks:
   ceph_network:
     driver: bridge
     ipam:
       config:
-        - subnet: "192.168.0.0/24"
-          gateway: "192.168.0.1"
+        - subnet: "${DOCKER_SUBNET}"
+          gateway: "${DOCKER_GATEWAY}"
