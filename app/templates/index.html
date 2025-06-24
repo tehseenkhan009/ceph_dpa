@@ -3,13 +3,285 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Upload File to S3</title>
+    <title>Ceph S3 File Manager</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .upload-section, .files-section, .status-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #fafafa;
+        }
+        .upload-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        input[type="file"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .files-list {
+            list-style: none;
+            padding: 0;
+        }
+        .files-list li {
+            padding: 10px;
+            margin: 5px 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .download-btn {
+            background-color: #28a745;
+            font-size: 12px;
+            padding: 5px 10px;
+        }
+        .download-btn:hover {
+            background-color: #218838;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 10px;
+        }
+        .status-healthy {
+            background-color: #28a745;
+        }
+        .status-unhealthy {
+            background-color: #dc3545;
+        }
+    </style>
 </head>
 <body>
-    <h1>Upload File to S3</h1>
-    <form method="POST" action="/upload" enctype="multipart/form-data">
-        <input type="file" name="file" accept=".txt, .pdf, .doc, .docx" required>
-        <button type="submit">Upload</button>
-    </form>
+    <div class="container">
+        <h1>🗄️ Ceph S3 File Manager</h1>
+        
+        <div class="status-section">
+            <h3>System Status</h3>
+            <div id="status">
+                <span class="status-indicator" id="statusIndicator"></span>
+                <span id="statusText">Checking...</span>
+            </div>
+        </div>
+
+        <div class="upload-section">
+            <h3>Upload File</h3>
+            <form class="upload-form" onsubmit="uploadFile(event)">
+                <input type="file" name="file" id="fileInput" accept=".txt,.pdf,.doc,.docx,.jpg,.jpeg,.png,.gif" required>
+                <button type="submit" id="uploadBtn">Upload</button>
+            </form>
+            <div id="uploadMessage"></div>
+        </div>
+
+        <div class="files-section">
+            <h3>Files in Storage</h3>
+            <button onclick="refreshFiles()" id="refreshBtn">Refresh List</button>
+            <ul class="files-list" id="filesList">
+                <li>Loading files...</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Check system status
+        async function checkStatus() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                const indicator = document.getElementById('statusIndicator');
+                const text = document.getElementById('statusText');
+                
+                if (response.ok) {
+                    indicator.className = 'status-indicator status-healthy';
+                    text.textContent = 'Connected to Ceph S3';
+                } else {
+                    indicator.className = 'status-indicator status-unhealthy';
+                    text.textContent = 'Connection Error: ' + data.message;
+                }
+            } catch (error) {
+                const indicator = document.getElementById('statusIndicator');
+                const text = document.getElementById('statusText');
+                indicator.className = 'status-indicator status-unhealthy';
+                text.textContent = 'Cannot reach server';
+            }
+        }
+
+        // Upload file
+        async function uploadFile(event) {
+            event.preventDefault();
+            
+            const fileInput = document.getElementById('fileInput');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const messageDiv = document.getElementById('uploadMessage');
+            
+            if (!fileInput.files[0]) {
+                showMessage('Please select a file', 'error');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showMessage(data.message, 'success');
+                    fileInput.value = '';
+                    refreshFiles();
+                } else {
+                    showMessage(data.message, 'error');
+                }
+            } catch (error) {
+                showMessage('Upload failed: ' + error.message, 'error');
+            } finally {
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = 'Upload';
+            }
+        }
+
+        // Refresh files list
+        async function refreshFiles() {
+            const filesList = document.getElementById('filesList');
+            const refreshBtn = document.getElementById('refreshBtn');
+            
+            refreshBtn.disabled = true;
+            refreshBtn.textContent = 'Refreshing...';
+            filesList.innerHTML = '<li>Loading files...</li>';
+            
+            try {
+                const response = await fetch('/list');
+                const data = await response.json();
+                
+                if (response.ok && data.files) {
+                    if (data.files.length === 0) {
+                        filesList.innerHTML = '<li>No files found</li>';
+                    } else {
+                        filesList.innerHTML = data.files.map(file => `
+                            <li>
+                                <span>${file}</span>
+                                <button class="download-btn" onclick="downloadFile('${file}')">Download</button>
+                            </li>
+                        `).join('');
+                    }
+                } else {
+                    filesList.innerHTML = '<li>Error loading files: ' + data.message + '</li>';
+                }
+            } catch (error) {
+                filesList.innerHTML = '<li>Error loading files: ' + error.message + '</li>';
+            } finally {
+                refreshBtn.disabled = false;
+                refreshBtn.textContent = 'Refresh List';
+            }
+        }
+
+        // Download file
+        async function downloadFile(filename) {
+            try {
+                const response = await fetch(`/download/${filename}`);
+                
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                } else {
+                    const data = await response.json();
+                    showMessage('Download failed: ' + data.message, 'error');
+                }
+            } catch (error) {
+                showMessage('Download failed: ' + error.message, 'error');
+            }
+        }
+
+        // Show message
+        function showMessage(message, type) {
+            const messageDiv = document.getElementById('uploadMessage');
+            messageDiv.innerHTML = `<div class="message ${type}">${message}</div>`;
+            setTimeout(() => {
+                messageDiv.innerHTML = '';
+            }, 5000);
+        }
+
+        // Initialize
+        checkStatus();
+        refreshFiles();
+        
+        // Check status every 30 seconds
+        setInterval(checkStatus, 30000);
+    </script>
 </body>
 </html>
